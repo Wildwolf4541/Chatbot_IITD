@@ -16,9 +16,9 @@ from langchain.chains.combine_documents import create_stuff_documents_chain
 
 # Load environment variables and set API keys
 load_dotenv()
-os.environ["GOOGLE_API_KEY"] = "AIzaSyBfR4gzvxE7ha_ikrhQ0IksTk_U999WlkA"
-os.environ["LANGCHAIN_API_KEY"] = "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"
-os.environ["LANGCHAIN_PROJECT"] = "Tutorial1"
+os.environ["GOOGLE_API_KEY"] = os.environ.get("GOOGLE_API_KEY")
+os.environ["LANGCHAIN_API_KEY"] = os.environ.get("LANGCHAIN_API_KEY")
+os.environ["LANGCHAIN_PROJECT"] = os.environ.get("LANGCHAIN_PROJECT")
 os.environ["LANGCHAIN_TRACING_V2"] = "true"
 
 # Streamlit page configuration
@@ -28,7 +28,7 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("🔮 Advanced RAG Chatbot")
+st.title("🔮 MY CHATBOT")
 st.markdown("*Ask questions about web content, PDF documents, or have general conversations*")
 
 # Initialize session state
