@@ -16,19 +16,21 @@ class VoiceAIAssistant:
         genai.configure(api_key=os.getenv('GOOGLE_API_KEY'))
         self.model = genai.GenerativeModel('gemini-1.5-flash')
         
-        # Initialize text-to-speech
-        self.tts_engine = pyttsx3.init()
-        self.tts_engine.setProperty('rate', 150)  # Speed of speech
-        self.tts_engine.setProperty('volume', 0.9)  # Volume level
-        
         # Initialize speech recognition
         self.recognizer = sr.Recognizer()
         self.microphone = sr.Microphone()
         
-        # Adjust for ambient noise
+        # Adjust for ambient noise (only once)
         with self.microphone as source:
             self.recognizer.adjust_for_ambient_noise(source)
-    
+
+    def _initialize_tts_engine(self):
+        """Initializes or re-initializes the pyttsx3 engine."""
+        engine = pyttsx3.init()
+        engine.setProperty('rate', 150)  # Speed of speech
+        engine.setProperty('volume', 0.9)  # Volume level
+        return engine
+
     def audio_to_text(self, audio_data):
         """Convert audio to text using speech recognition"""
         try:
@@ -50,11 +52,19 @@ class VoiceAIAssistant:
     
     def text_to_speech(self, text):
         """Convert text to speech"""
+        engine = None
         try:
-            self.tts_engine.say(text)
-            self.tts_engine.runAndWait()
+            engine = self._initialize_tts_engine()
+            engine.say(text)
+            engine.runAndWait()
         except Exception as e:
             st.error(f"Error in text-to-speech: {str(e)}")
+        finally:
+            if engine:
+                # This ensures the speech engine is shut down cleanly after use
+                engine.stop()
+                # Consider adding a small delay if issues persist
+                # time.sleep(0.05)
     
     def safe_file_cleanup(self, file_path, max_attempts=5, delay=0.1):
         """Safely delete temporary file with retry logic"""
@@ -99,7 +109,7 @@ class VoiceAIAssistant:
                 # Small delay to ensure file is released
                 time.sleep(0.1)
                 
-                # Now process the audio
+                # Now process the audio (re-reading it is fine, the file is there)
                 with sr.AudioFile(temp_file_path) as source:
                     audio_data = self.recognizer.record(source)
                 
@@ -143,7 +153,7 @@ class VoiceAIAssistant:
                 # Clean up temporary file with retry logic
                 if temp_file_path:
                     self.safe_file_cleanup(temp_file_path)
-        
+            
         return None, None
 
 def main():
@@ -256,25 +266,25 @@ def main():
     with st.expander("📋 How to Use"):
         st.markdown("""
         1. *Set up your environment:*
-           bash
-           pip install streamlit speechrecognition pyttsx3 google-generativeai audio-recorder-streamlit pyaudio
-           
+            bash
+            pip install streamlit speechrecognition pyttsx3 google-generativeai audio-recorder-streamlit pyaudio
+            
         
         2. *Voice Mode:*
-           - Click the microphone button to start recording
-           - Speak your question or message clearly
-           - Click "Process Voice Input" to get AI response
-           - Listen to the AI response
+            - Click the microphone button to start recording
+            - Speak your question or message clearly
+            - Click "Process Voice Input" to get AI response
+            - Listen to the AI response
         
         3. *Text Mode:*
-           - Type your message in the text box
-           - Click "Send Text" to get AI response
-           - Listen to the AI response
+            - Type your message in the text box
+            - Click "Send Text" to get AI response
+            - Listen to the AI response
         
         4. *Troubleshooting:*
-           - If you encounter audio issues, try restarting the application
-           - Make sure your microphone is working and accessible
-           - Check your internet connection for speech recognition
+            - If you encounter audio issues, try restarting the application
+            - Make sure your microphone is working and accessible
+            - Check your internet connection for speech recognition
         """)
     
     # Conversation history
