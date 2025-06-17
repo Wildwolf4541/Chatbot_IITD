@@ -2,18 +2,19 @@ import os
 import tempfile
 import streamlit as st
 import speech_recognition as sr
-import pyttsx3
 import google.generativeai as genai
 from audio_recorder_streamlit import audio_recorder
 import threading
 import queue
 import time
 import gc
+from gtts import gTTS
+from pygame import mixer
 
 class VoiceAIAssistant:
     def __init__(self):
         # Configure Gemini API
-        genai.configure(api_key=os.getenv('GOOGLE_API_KEY'))
+        genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
         self.model = genai.GenerativeModel('gemini-1.5-flash')
         
         # Initialize speech recognition
@@ -23,13 +24,6 @@ class VoiceAIAssistant:
         # Adjust for ambient noise (only once)
         with self.microphone as source:
             self.recognizer.adjust_for_ambient_noise(source)
-
-    def _initialize_tts_engine(self):
-        """Initializes or re-initializes the pyttsx3 engine."""
-        engine = pyttsx3.init()
-        engine.setProperty('rate', 150)  # Speed of speech
-        engine.setProperty('volume', 0.9)  # Volume level
-        return engine
 
     def audio_to_text(self, audio_data):
         """Convert audio to text using speech recognition"""
@@ -51,20 +45,28 @@ class VoiceAIAssistant:
             return f"Error getting AI response: {str(e)}"
     
     def text_to_speech(self, text):
-        """Convert text to speech"""
-        engine = None
+        """Convert text to speech using gTTS"""
         try:
-            engine = self._initialize_tts_engine()
-            engine.say(text)
-            engine.runAndWait()
+            tts = gTTS(text=text, lang='en')
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_file:
+                tts.save(tmp_file.name)
+                tmp_file.flush()
+                temp_path = tmp_file.name
+            
+            mixer.init()
+            mixer.music.load(temp_path)
+            mixer.music.play()
+            
+            while mixer.music.get_busy():
+                time.sleep(0.1)
+            
+            mixer.music.unload()
+            mixer.quit()
+            
+            # Cleanup
+            self.safe_file_cleanup(temp_path)
         except Exception as e:
             st.error(f"Error in text-to-speech: {str(e)}")
-        finally:
-            if engine:
-                # This ensures the speech engine is shut down cleanly after use
-                engine.stop()
-                # Consider adding a small delay if issues persist
-                # time.sleep(0.05)
     
     def safe_file_cleanup(self, file_path, max_attempts=5, delay=0.1):
         """Safely delete temporary file with retry logic"""
@@ -264,11 +266,10 @@ def main():
     
     # Instructions
     with st.expander("📋 How to Use"):
-        st.markdown("""
+        st.markdown(""" 
         1. *Set up your environment:*
             bash
-            pip install streamlit speechrecognition pyttsx3 google-generativeai audio-recorder-streamlit pyaudio
-            
+            pip install streamlit speechrecognition gtts pygame google-generativeai audio-recorder-streamlit pyaudio
         
         2. *Voice Mode:*
             - Click the microphone button to start recording
