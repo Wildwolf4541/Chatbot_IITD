@@ -1,14 +1,15 @@
 import os
-import tempfile
 import streamlit as st
 import speech_recognition as sr
 import google.generativeai as genai
 from audio_recorder_streamlit import audio_recorder
+from faster_whisper import WhisperModel
 import threading
-import queue
-import time
+import asyncio
+import edge_tts
+from io import BytesIO
 import gc
-from gtts import gTTS
+import tempfile
 from pygame import mixer
 
 LANGUAGES = {
@@ -22,7 +23,19 @@ LANGUAGES = {
     "Korean": "ko",
     "Russian": "ru",
     "Italian": "it",
-    # add more if you want
+}
+
+VOICE_MAPPING = {
+    "en": "en-US-GuyNeural",
+    "hi": "hi-IN-MadhurNeural",
+    "es": "es-ES-ElviraNeural",
+    "fr": "fr-FR-DeniseNeural",
+    "de": "de-DE-KatjaNeural",
+    "ja": "ja-JP-NanamiNeural",
+    "ko": "ko-KR-SunHiNeural",
+    "zh-CN": "zh-CN-XiaoxiaoNeural",
+    "ru": "ru-RU-DmitryNeural",
+    "it": "it-IT-IsabellaNeural",
 }
 
 class VoiceAIAssistant:
@@ -30,131 +43,90 @@ class VoiceAIAssistant:
         genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
         self.model = genai.GenerativeModel('gemini-1.5-flash')
         self.recognizer = sr.Recognizer()
-        self.microphone = sr.Microphone()
         self.language = language
-        
-        with self.microphone as source:
-            self.recognizer.adjust_for_ambient_noise(source)
+        self.whisper_model = WhisperModel("base", device="cpu")
 
-    def audio_to_text(self, audio_data):
+    def audio_to_text(self, audio_bytes):
         try:
-            text = self.recognizer.recognize_google(audio_data, language=self.language)
-            return text
-        except sr.UnknownValueError:
-            return "Sorry, I couldn't understand the audio."
-        except sr.RequestError as e:
-            return f"Could not request results; {e}"
+            audio_file = BytesIO(audio_bytes)
+            with sr.AudioFile(audio_file) as source:
+                audio_data = self.recognizer.record(source)
+                wav_path = "temp.wav"
+                with open(wav_path, "wb") as f:
+                    f.write(audio_bytes)
+                segments, _ = self.whisper_model.transcribe(wav_path, beam_size=5)
+                text = " ".join([seg.text for seg in segments])
+                os.remove(wav_path)
+                return text
+        except Exception as e:
+            return f"Error in STT: {str(e)}"
 
     def get_gemini_response(self, text):
         try:
-            # Optional: force Gemini to respond in selected language
             prompt = f"Respond in {self.get_language_name()}:\n{text}"
             response = self.model.generate_content(prompt)
             return response.text
         except Exception as e:
             return f"Error getting AI response: {str(e)}"
 
-    def text_to_speech(self, text):
+    async def text_to_speech(self, text):
         try:
-            tts = gTTS(text=text, lang=self.language)
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_file:
-                tts.save(tmp_file.name)
-                tmp_file.flush()
-                temp_path = tmp_file.name
-            
+            voice = VOICE_MAPPING.get(self.language, "en-US-GuyNeural")
+            output_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3").name
+            communicate = edge_tts.Communicate(text, voice=voice)
+            await communicate.save(output_path)
+
             mixer.init()
-            mixer.music.load(temp_path)
+            mixer.music.load(output_path)
             mixer.music.play()
             while mixer.music.get_busy():
-                time.sleep(0.1)
+                await asyncio.sleep(0.1)
             mixer.music.unload()
             mixer.quit()
-            self.safe_file_cleanup(temp_path)
-        except Exception as e:
-            st.error(f"Error in text-to-speech: {str(e)}")
 
-    def safe_file_cleanup(self, file_path, max_attempts=5, delay=0.1):
-        for attempt in range(max_attempts):
-            try:
-                if os.path.exists(file_path):
-                    os.unlink(file_path)
-                return True
-            except PermissionError:
-                if attempt < max_attempts - 1:
-                    time.sleep(delay)
-                    delay *= 2
-                else:
-                    st.warning(f"Could not delete temporary file: {file_path}")
-                    return False
-            except Exception as e:
-                st.warning(f"Unexpected error deleting file: {e}")
-                return False
-        return False
+            os.remove(output_path)
+        except Exception as e:
+            st.error(f"Error in TTS: {str(e)}")
+
+    def get_language_name(self):
+        for name, code in LANGUAGES.items():
+            if code == self.language:
+                return name
+        return "English"
 
     def process_voice_input(self, audio_bytes):
         if audio_bytes:
-            temp_file_path = None
-            audio_data = None
-            
             try:
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
-                    tmp_file.write(audio_bytes)
-                    tmp_file.flush()
-                    temp_file_path = tmp_file.name
-                
-                with sr.AudioFile(temp_file_path) as source:
-                    audio_data = self.recognizer.record(source)
-
-                user_text = self.audio_to_text(audio_data)
+                user_text = self.audio_to_text(audio_bytes)
                 st.write("🎤 *You said:*")
                 st.write(user_text)
-                
-                if "Sorry, I couldn't understand" not in user_text:
+
+                if "Error" not in user_text:
                     st.write("🤖 *AI Response:*")
                     ai_response = self.get_gemini_response(user_text)
                     st.write(ai_response)
 
                     st.write("🔊 *Playing AI response...*")
-                    speech_thread = threading.Thread(
-                        target=self.text_to_speech,
-                        args=(ai_response,)
-                    )
-                    speech_thread.daemon = True
-                    speech_thread.start()
+                    asyncio.run(self.text_to_speech(ai_response))
 
                     if 'conversation_history' not in st.session_state:
                         st.session_state.conversation_history = []
                     st.session_state.conversation_history.append((user_text, ai_response))
 
                     return user_text, ai_response
-
             except Exception as e:
                 st.error(f"Error processing audio: {str(e)}")
-
             finally:
-                if audio_data:
-                    del audio_data
                 gc.collect()
-
-                if temp_file_path:
-                    self.safe_file_cleanup(temp_file_path)
         return None, None
-
-    def get_language_name(self):
-        # Return language name from code for prompt clarity
-        for name, code in LANGUAGES.items():
-            if code == self.language:
-                return name
-        return "English"
 
 def main():
     st.set_page_config(page_title="Voice AI Assistant", page_icon="🎤", layout="wide")
-    st.title("🎤 Voice-to-Voice AI Assistant")
-    st.markdown("*Speak → Gemini AI → Hear Response*")
+    st.title("🎤 Voice-to-Voice AI Assistant (Optimized)")
 
     with st.sidebar:
         st.markdown("### 🔑 API Configuration")
-        api_key = st.text_input("Enter your Gemini API Key:", type="password", help="Get your API key from: https://makersuite.google.com/app/apikey")
+        api_key = st.text_input("Enter your Gemini API Key:", type="password")
         if api_key:
             os.environ['GEMINI_API_KEY'] = api_key
             st.success("✅ API Key set successfully!")
@@ -165,7 +137,6 @@ def main():
         selected_lang_name = st.selectbox("Choose Language:", options=list(LANGUAGES.keys()), index=0)
         selected_lang_code = LANGUAGES[selected_lang_name]
 
-        st.markdown("### ⚙ Settings")
         if st.button("🧹 Clear Conversation History"):
             st.session_state.conversation_history = []
             st.success("Conversation history cleared!")
@@ -187,23 +158,14 @@ def main():
 
     with col1:
         st.markdown("### 🎙 Record Your Voice")
-        audio_bytes = audio_recorder(
-            text="Click to start recording",
-            recording_color="#e74c3c",
-            neutral_color="#34495e",
-            icon_name="microphone-lines",
-            icon_size="2x"
-        )
+        audio_bytes = audio_recorder(text="Click to start recording")
         if audio_bytes:
             st.audio(audio_bytes, format="audio/wav")
             if st.button("🚀 Process Voice Input", type="primary"):
                 with st.spinner("Processing your voice..."):
-                    try:
-                        user_text, ai_response = st.session_state.assistant.process_voice_input(audio_bytes)
-                        if user_text and ai_response:
-                            st.success("✅ Voice processing completed!")
-                    except Exception as e:
-                        st.error(f"Error processing voice: {str(e)}")
+                    user_text, ai_response = st.session_state.assistant.process_voice_input(audio_bytes)
+                    if user_text and ai_response:
+                        st.success("✅ Voice processing completed!")
 
     with col2:
         st.markdown("### 💬 Text Chat (Optional)")
@@ -215,12 +177,7 @@ def main():
                     ai_response = st.session_state.assistant.get_gemini_response(user_input)
                     st.write(ai_response)
                     st.write("🔊 *Playing AI response...*")
-                    speech_thread = threading.Thread(
-                        target=st.session_state.assistant.text_to_speech,
-                        args=(ai_response,)
-                    )
-                    speech_thread.daemon = True
-                    speech_thread.start()
+                    asyncio.run(st.session_state.assistant.text_to_speech(ai_response))
                     if 'conversation_history' not in st.session_state:
                         st.session_state.conversation_history = []
                     st.session_state.conversation_history.append((user_input, ai_response))
