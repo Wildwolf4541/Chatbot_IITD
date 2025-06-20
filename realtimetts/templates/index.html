@@ -1,0 +1,871 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Real-Time Voice AI with Gemini</title>
+  <!-- Bootstrap CSS -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <!-- Socket.IO -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+  <style>
+    .visualizer {
+      width: 100%;
+      height: 150px;
+      background-color: #f8f9fa;
+      border: 2px solid #dee2e6;
+      border-radius: 8px;
+      margin-bottom: 20px;
+    }
+
+    .status-indicator {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      display: inline-block;
+      margin-right: 8px;
+    }
+
+    .status-connected { background-color: #28a745; }
+    .status-listening { background-color: #ffc107; }
+    .status-processing { background-color: #0dcaf0; }
+    .status-speaking { background-color: #dc3545; }
+    .status-idle { background-color: #6c757d; }
+    .status-error { background-color: #dc3545; }
+    .status-vad-active { background-color: #007bff; }
+
+
+    .message-bubble {
+      max-width: 80%;
+      margin-bottom: 15px;
+      padding: 12px 16px;
+      border-radius: 18px;
+      word-wrap: break-word;
+      position: relative;
+    }
+
+    .message-user {
+      background-color: #007bff;
+      color: white;
+      margin-left: auto;
+    }
+
+    .message-assistant {
+      background-color: #e9ecef;
+      color: #333;
+      margin-right: auto;
+    }
+
+    .chat-container {
+      height: 400px;
+      overflow-y: auto;
+      border: 1px solid #dee2e6;
+      border-radius: 8px;
+      padding: 15px;
+      background-color: #f8f9fa;
+    }
+
+    .controls {
+      text-align: center;
+      margin: 20px 0;
+    }
+
+    .btn-voice { 
+      width: 100px;
+      height: 100px;
+      border-radius: 50%;
+      border: none;
+      font-size: 32px;
+      transition: all 0.3s ease;
+      position: relative;
+      overflow: hidden;
+      background-color: #6c757d; 
+      color: white;
+    }
+
+    .btn-voice:active {
+      transform: scale(0.95);
+    }
+
+    .btn-voice.vad-listening-mode { 
+      background-color: #007bff; 
+      color: white;
+    }
+    .btn-voice.user-speaking { 
+      background-color: #ffc107; 
+      color: #333;
+      animation: pulse-yellow 1s infinite;
+    }
+
+    .btn-voice.ai-processing { 
+      background-color: #0dcaf0; 
+      color: #333;
+      animation: spin 1s linear infinite;
+    }
+    .btn-voice.ai-speaking { 
+        background-color: #dc3545; 
+        color: white;
+    }
+
+    @keyframes pulse-yellow {
+      0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 193, 7, 0.7); }
+      70% { transform: scale(1.05); box-shadow: 0 0 0 10px rgba(255, 193, 7, 0); }
+      100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 193, 7, 0); }
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    .connection-status {
+      padding: 8px 16px;
+      border-radius: 20px;
+      font-size: 14px;
+      font-weight: 500;
+    }
+
+    .connection-connected {
+      background-color: #d4edda;
+      color: #155724;
+      border: 1px solid #c3e6cb;
+    }
+
+    .connection-disconnected {
+      background-color: #f8d7da;
+      color: #721c24;
+      border: 1px solid #f5c6cb;
+    }
+
+    .audio-controls {
+      background-color: #f8f9fa;
+      padding: 20px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+    }
+
+    .transcription-display {
+      background-color: #e7f3ff;
+      border: 1px solid #b3d9ff;
+      border-radius: 8px;
+      padding: 15px;
+      margin: 15px 0;
+      font-style: italic;
+      min-height: 50px;
+    }
+
+    .loading-dots {
+      display: inline-block;
+    }
+
+    .loading-dots:after {
+      content: '';
+      animation: dots 1.5s infinite;
+    }
+
+    @keyframes dots {
+      0%, 20% { content: ''; }
+      40% { content: '.'; }
+      60% { content: '..'; }
+      80%, 100% { content: '...'; }
+    }
+  </style>
+</head>
+<body class="p-3">
+  <div class="container">
+    <div class="row">
+      <div class="col-md-12">
+        <h1 class="mb-4 text-center">
+          🤖 Real-Time Voice AI with Gemini
+        </h1>
+
+        <div class="d-flex justify-content-between align-items-center mb-4">
+          <div>
+            <span id="connectionStatus" class="connection-status connection-disconnected">
+              ⚠️ Connecting...
+            </span>
+          </div>
+          <div>
+            <button id="testGemini" class="btn btn-outline-primary btn-sm">
+              Test Gemini API
+            </button>
+          </div>
+        </div>
+
+        <div class="card mb-4">
+          <div class="card-body">
+            <h5 class="card-title">
+              <span id="statusIndicator" class="status-indicator status-idle"></span>
+              Status: <span id="statusText">Ready</span>
+            </h5>
+            <p class="card-text" id="statusDetail">Click the microphone to start listening</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="col-md-6">
+        <div class="audio-controls">
+          <h5 class="mb-3">🎙️ Voice Controls</h5>
+
+          <div class="controls">
+            <button id="voiceBtn" class="btn btn-voice" title="Click to toggle listening mode">
+              🎤
+            </button>
+            <div class="mt-3">
+              <small class="text-muted" id="voiceBtnHelpText">Click to enable hands-free mode</small>
+            </div>
+          </div>
+
+          <div class="transcription-display" id="transcriptionDisplay">
+            <strong>Transcription:</strong> <span id="transcriptionText">Your speech will appear here...</span>
+          </div>
+
+          <div class="text-center">
+            <button id="clearChat" class="btn btn-outline-danger btn-sm">
+              🗑️ Clear Chat
+            </button>
+            <button id="stopSpeaking" class="btn btn-outline-warning btn-sm">
+              🔇 Stop AI Speaking
+            </button>
+          </div>
+        </div>
+
+        <div class="mb-4">
+          <p><strong>🎵 Audio Input:</strong></p>
+          <canvas id="audioVisualizer" class="visualizer"></canvas>
+        </div>
+      </div>
+
+      <div class="col-md-6">
+        <div class="card">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <h5 class="mb-0">💬 Conversation with Gemini</h5>
+            <small class="text-muted">Powered by Gemini</small>
+          </div>
+          <div class="chat-container" id="chatContainer">
+            <div class="message-bubble message-assistant d-flex" style="justify-content: flex-start;">
+                Hello! I'm your AI voice assistant. Click the microphone button to enable hands-free mode. I'll listen for your voice and respond!
+            </div>
+          </div>
+        </div>
+
+        <div class="card mt-4">
+          <div class="card-header">
+            <h6 class="mb-0">🔧 Voice Settings</h6>
+          </div>
+          <div class="card-body">
+            <div class="row">
+              <div class="col-md-6">
+                <label for="voiceSelect" class="form-label">Voice:</label>
+                <select id="voiceSelect" class="form-select form-select-sm">
+                  <option value="">Default</option>
+                </select>
+              </div>
+              <div class="col-md-3">
+                <label for="speedRange" class="form-label">Speed: <span id="speedValue">1.0</span></label>
+                <input type="range" class="form-range" id="speedRange" min="0.5" max="2" step="0.1" value="1">
+              </div>
+              <div class="col-md-3">
+                <label for="pitchRange" class="form-label">Pitch: <span id="pitchValue">1.0</span></label>
+                <input type="range" class="form-range" id="pitchRange" min="0.5" max="2" step="0.1" value="1">
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+
+  <script>
+    class VoiceAI {
+      constructor() {
+        this.socket = io();
+        this.mediaRecorder = null;
+        this.audioChunks = [];
+        
+        this.isCapturingAudio = false; 
+        this.isProcessingAI = false;   
+        this.vadEnabled = false;       
+        this.userIsSpeakingVAD = false; 
+        
+        this.synthesis = window.speechSynthesis;
+        this.currentUtterance = null;
+        this.localStream = null;
+        this.audioContext = null;
+        this.analyser = null;
+        this.sourceNode = null;
+
+        this.silenceTimeoutId = null;
+        this.speechStartTime = 0;
+
+        // --- VAD Parameters ---
+        // Adjust these based on your microphone and environment
+        this.VAD_ENERGY_THRESHOLD = 0.01; 
+        this.VAD_SILENCE_DURATION_MS = 1200; 
+        this.VAD_MIN_SPEECH_DURATION_MS = 400;
+        // this.BARGE_IN_ENERGY_MULTIPLIER = 2.5; // Barge-in disabled for now
+
+        this.animationId = null;
+
+        this._initElements();
+        this._initSocketEvents();
+        this._initSpeechSynthesis();
+        this._bindEvents();
+        this.updateStatus('idle', 'Ready', 'Click the microphone to start listening');
+        console.log("VoiceAI initialized.");
+      }
+
+      // Private helper for logging (optional)
+      _log(message, type = "info") {
+        const style = type === "error" ? "color: red; font-weight: bold;" : 
+                      type === "warn" ? "color: orange;" : 
+                      type === "success" ? "color: green;" : "color: blue;";
+        console.log(`%c[VoiceAI] ${message}`, style);
+      }
+
+      _initElements() {
+        this.voiceBtn = document.getElementById('voiceBtn');
+        this.voiceBtnHelpText = document.getElementById('voiceBtnHelpText');
+        this.statusIndicator = document.getElementById('statusIndicator');
+        this.statusText = document.getElementById('statusText');
+        this.statusDetail = document.getElementById('statusDetail');
+        this.chatContainer = document.getElementById('chatContainer');
+        this.clearChat = document.getElementById('clearChat');
+        this.stopSpeaking = document.getElementById('stopSpeaking');
+        this.connectionStatus = document.getElementById('connectionStatus');
+        this.testGemini = document.getElementById('testGemini');
+        this.transcriptionText = document.getElementById('transcriptionText');
+        this.voiceSelect = document.getElementById('voiceSelect');
+        this.speedRange = document.getElementById('speedRange');
+        this.pitchRange = document.getElementById('pitchRange');
+        this.speedValue = document.getElementById('speedValue');
+        this.pitchValue = document.getElementById('pitchValue');
+        this.audioVisualizer = document.getElementById('audioVisualizer');
+      }
+
+      _initSocketEvents() {
+        this.socket.on('connect', () => {
+          this._log('✅ Connected to server', "success");
+          this.connectionStatus.textContent = '✅ Connected';
+          this.connectionStatus.className = 'connection-status connection-connected';
+          this._requestMicrophoneAccess();
+        });
+
+        this.socket.on('disconnect', () => {
+          this._log('❌ Disconnected from server', "warn");
+          this.connectionStatus.textContent = '❌ Disconnected';
+          this.connectionStatus.className = 'connection-status connection-disconnected';
+          this.stopVAD(); 
+        });
+
+        this.socket.on('audio_response', (data) => {
+          // this._log('🤖 Received AI response: ' + JSON.stringify(data)); // Can be verbose
+          this._handleAudioResponse(data);
+        });
+
+        this.socket.on('conversation_cleared', () => {
+          this.chatContainer.innerHTML = '';
+          this._addMessage('Conversation cleared. How can I help you?', 'assistant');
+        });
+      }
+
+      _initSpeechSynthesis() {
+        const updateVoices = () => {
+          const voices = this.synthesis.getVoices();
+          this.voiceSelect.innerHTML = '<option value="">Default</option>';
+          voices.forEach((voice, index) => {
+            const option = document.createElement('option');
+            option.value = index;
+            option.textContent = `${voice.name} (${voice.lang})`;
+            if (voice.default) option.selected = true;
+            this.voiceSelect.appendChild(option);
+          });
+        };
+        updateVoices();
+        if (this.synthesis.onvoiceschanged !== undefined) {
+          this.synthesis.onvoiceschanged = updateVoices;
+        }
+      }
+
+      async _requestMicrophoneAccess() {
+          if (this.localStream && this.localStream.active) {
+            if (!this.audioContext || this.audioContext.state !== 'running') this._initAudioPipeline();
+            return;
+          }
+          this._log("Requesting microphone access...");
+          try {
+              this.localStream = await navigator.mediaDevices.getUserMedia({
+                  audio: {
+                      echoCancellation: true,
+                      noiseSuppression: true,
+                      autoGainControl: true,
+                      sampleRate: 44100 
+                  }
+              });
+              this._log('🎤 Microphone access granted', "success");
+              this._initAudioPipeline(); 
+              this.updateStatus('idle', 'Ready', 'Click the microphone to start listening');
+          } catch (err) {
+              this._log(`Error accessing microphone: ${err.message} (${err.name})`, "error");
+              this.updateStatus('error', 'Mic Error', 'Could not access microphone.');
+              alert('Microphone access denied. Please grant permission in your browser settings and refresh the page.');
+          }
+      }
+
+      _initAudioPipeline() {
+        if (!this.localStream || !this.localStream.active) {
+            this._log("Cannot init audio pipeline: localStream is not available or inactive.", "error");
+            return;
+        }
+        if (this.audioContext && this.audioContext.state === 'running') return;
+
+        this._log("Initializing audio pipeline (AudioContext, Analyser)...");
+        this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        
+        if (this.audioContext.state === 'suspended') {
+            this.audioContext.resume().then(() => this._log("AudioContext resumed."));
+        }
+
+        this.analyser = this.audioContext.createAnalyser();
+        this.analyser.fftSize = 2048; 
+        this.analyser.smoothingTimeConstant = 0.6;
+
+        this.sourceNode = this.audioContext.createMediaStreamSource(this.localStream);
+        this.sourceNode.connect(this.analyser);
+        
+        this._startAudioVisualizationAndVADLoop(); 
+        this._log('🎵 Audio pipeline initialized.');
+      }
+
+      _startAudioVisualizationAndVADLoop() {
+        if (this.animationId) cancelAnimationFrame(this.animationId); 
+
+        const canvas = this.audioVisualizer;
+        const ctx = canvas.getContext('2d');
+        if (!canvas.offsetWidth || !canvas.offsetHeight) {
+            setTimeout(() => this._startAudioVisualizationAndVADLoop(), 100);
+            return;
+        }
+        canvas.width = canvas.offsetWidth; 
+        canvas.height = canvas.offsetHeight;
+
+        const bufferLength = this.analyser.frequencyBinCount;
+        const dataArray = new Uint8Array(bufferLength);
+
+        const drawAndProcess = () => {
+          this.animationId = requestAnimationFrame(drawAndProcess);
+          if (!this.analyser) return; 
+          this.analyser.getByteTimeDomainData(dataArray);
+
+          ctx.fillStyle = '#f8f9fa';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.lineWidth = 2;
+
+          if (this.userIsSpeakingVAD) ctx.strokeStyle = '#ffc107'; 
+          else if (this.vadEnabled) ctx.strokeStyle = '#007bff'; 
+          else ctx.strokeStyle = '#6c757d'; 
+          
+          ctx.beginPath();
+          const sliceWidth = canvas.width * 1.0 / bufferLength;
+          let x = 0;
+          for (let i = 0; i < bufferLength; i++) {
+            const v = dataArray[i] / 128.0; 
+            const y = v * canvas.height / 2;
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+            x += sliceWidth;
+          }
+          ctx.lineTo(canvas.width, canvas.height / 2);
+          ctx.stroke();
+
+          // VAD Logic: Only listen for user speech if VAD is enabled,
+          // AI is not processing, AND AI is not currently speaking.
+          if (this.vadEnabled && !this.isProcessingAI && !this.synthesis.speaking) { 
+              if (!this.userIsSpeakingVAD && !this.isCapturingAudio) {
+                  this._vad_detectSpeechStart(dataArray);
+              } else if (this.userIsSpeakingVAD && this.isCapturingAudio) {
+                  this._vad_detectSpeechContinuation(dataArray);
+              }
+          }
+        };
+        drawAndProcess();
+      }
+
+      toggleVAD() {
+        if (!this.localStream || !this.localStream.active || !this.audioContext || this.audioContext.state !== 'running') {
+            this._log("Audio pipeline not ready. Attempting to re-initialize before toggling VAD.", "warn");
+            this._requestMicrophoneAccess().then(() => { 
+                if (this.localStream && this.localStream.active && this.audioContext && this.audioContext.state === 'running') {
+                    if (this.vadEnabled) this.stopVAD(); else this.startVAD();
+                } else {
+                    this._log("Failed to initialize audio pipeline for VAD toggle.", "error");
+                }
+            });
+            return;
+        }
+
+        if (this.vadEnabled) {
+            this.stopVAD();
+        } else {
+            this.startVAD();
+        }
+      }
+
+      startVAD() {
+        if (this.vadEnabled) return;
+        this._log('🟢 Activating VAD (Hands-Free Mode)...', "success");
+        this.vadEnabled = true;
+        this.userIsSpeakingVAD = false; 
+        this.isCapturingAudio = false; 
+        this.audioChunks = []; 
+        this.updateStatus('vad-active', 'Listening...', 'Speak when ready');
+        this.voiceBtn.classList.add('vad-listening-mode');
+        this.voiceBtn.classList.remove('user-speaking', 'ai-processing', 'ai-speaking');
+        this.voiceBtn.innerHTML = '👂';
+        this.voiceBtnHelpText.textContent = "Listening for your voice...";
+        this.transcriptionText.textContent = 'Your speech will appear here...';
+        
+        if (!this.animationId && this.audioContext && this.audioContext.state === 'running') {
+             this._startAudioVisualizationAndVADLoop();
+        }
+      }
+
+      stopVAD() { 
+        if (!this.vadEnabled) return;
+        this._log('🔴 Deactivating VAD mode.', "warn");
+        this.vadEnabled = false;
+
+        if (this.silenceTimeoutId) clearTimeout(this.silenceTimeoutId);
+        this.silenceTimeoutId = null;
+        
+        this.userIsSpeakingVAD = false; 
+
+        if (this.isCapturingAudio) { 
+            this._log("VAD mode off during capture. Discarding audio.", "warn");
+            this.isCapturingAudio = false; 
+            if (this.mediaRecorder && this.mediaRecorder.state === "recording") {
+                this.mediaRecorder.stop();
+            }
+        }
+        
+        this.updateStatus('idle', 'Ready', 'Click microphone to enable hands-free');
+        this.voiceBtn.classList.remove('vad-listening-mode', 'user-speaking', 'ai-processing', 'ai-speaking');
+        this.voiceBtn.innerHTML = '🎤';
+        this.voiceBtnHelpText.textContent = "Click to enable hands-free mode";
+      }
+      
+      _calculateAverageEnergy(dataArray) {
+        let sum = 0;
+        for (let i = 0; i < dataArray.length; i++) {
+            const normalizedSample = (dataArray[i] / 128.0) - 1.0; 
+            sum += normalizedSample * normalizedSample;
+        }
+        return Math.sqrt(sum / dataArray.length);
+      }
+
+      _vad_detectSpeechStart(dataArray) {
+        const averageEnergy = this._calculateAverageEnergy(dataArray);
+
+        if (averageEnergy > this.VAD_ENERGY_THRESHOLD) {
+            this._log(`🗣️ VAD: Speech START detected! Energy: ${averageEnergy.toFixed(4)}`, "success");
+            this.userIsSpeakingVAD = true; 
+            this.speechStartTime = Date.now();
+            this.updateStatus('listening', 'User Speaking...', 'Capturing your voice');
+            this.voiceBtn.classList.add('user-speaking');
+            this.voiceBtn.classList.remove('vad-listening-mode');
+            this.transcriptionText.innerHTML = 'Listening<span class="loading-dots"></span>';
+            
+            this._startMediaRecorderForCapture();
+
+            if (this.silenceTimeoutId) clearTimeout(this.silenceTimeoutId);
+            this.silenceTimeoutId = setTimeout(() => {
+                if (this.userIsSpeakingVAD && this.vadEnabled && this.isCapturingAudio) { 
+                     this._vad_handleEndOfSpeech();
+                }
+            }, this.VAD_SILENCE_DURATION_MS);
+        }
+      }
+      
+      _vad_detectSpeechContinuation(dataArray) {
+        const averageEnergy = this._calculateAverageEnergy(dataArray);
+        
+        if (averageEnergy > this.VAD_ENERGY_THRESHOLD) { 
+            if (this.silenceTimeoutId) clearTimeout(this.silenceTimeoutId);
+            this.silenceTimeoutId = setTimeout(() => {
+                 if (this.userIsSpeakingVAD && this.vadEnabled && this.isCapturingAudio) { 
+                     this._vad_handleEndOfSpeech();
+                 }
+            }, this.VAD_SILENCE_DURATION_MS);
+        }
+      }
+
+      _vad_handleEndOfSpeech() {
+        if (!this.vadEnabled) { // VAD mode was turned off
+            this.isCapturingAudio = false; 
+            this.userIsSpeakingVAD = false;
+            if (this.mediaRecorder && this.mediaRecorder.state === "recording") this.mediaRecorder.stop();
+            return;
+        }
+        if (!this.userIsSpeakingVAD && !this.isCapturingAudio) return;
+
+        if (this.silenceTimeoutId) clearTimeout(this.silenceTimeoutId);
+        this.silenceTimeoutId = null;
+
+        const speechDuration = Date.now() - this.speechStartTime;
+        this._log(`🎤 VAD determined End of Speech. Duration: ${speechDuration}ms`);
+        this.userIsSpeakingVAD = false; 
+
+        if (!this.isCapturingAudio) { 
+            if (this.vadEnabled) { 
+                this.updateStatus('vad-active', 'Listening...', 'Speak when ready.');
+                this.voiceBtn.classList.add('vad-listening-mode');
+                this.voiceBtn.classList.remove('user-speaking');
+            }
+            return;
+        }
+
+        if (speechDuration < this.VAD_MIN_SPEECH_DURATION_MS) {
+            this._log(`🎤 Speech too short (${speechDuration}ms). Discarding.`, "warn");
+            this.isCapturingAudio = false; 
+            if (this.mediaRecorder && this.mediaRecorder.state === "recording") this.mediaRecorder.stop(); 
+            this.audioChunks = [];
+            this.transcriptionText.textContent = 'Speech too short...';
+            if (this.vadEnabled) { 
+                this.updateStatus('vad-active', 'Listening...', 'Speak when ready.');
+                this.voiceBtn.classList.add('vad-listening-mode');
+                this.voiceBtn.classList.remove('user-speaking');
+            }
+            return;
+        }
+        
+        if (this.mediaRecorder && this.mediaRecorder.state === "recording") {
+            // isCapturingAudio is true, onstop will process
+            this.mediaRecorder.stop();
+        } else if (this.isCapturingAudio && this.audioChunks.length > 0) { 
+            this._processCapturedAudio(); 
+        } else {
+             this.isCapturingAudio = false; 
+             if (this.vadEnabled) {
+                this.updateStatus('vad-active', 'Listening...', 'Speak when ready.');
+                this.voiceBtn.classList.add('vad-listening-mode');
+                this.voiceBtn.classList.remove('user-speaking');
+             }
+        }
+      }
+
+      _startMediaRecorderForCapture() {
+        if (!this.localStream || !this.localStream.active) {
+            this._log("Cannot start MediaRecorder: localStream is not available.", "error");
+            this.stopVAD(); return;
+        }
+        if (this.mediaRecorder && this.mediaRecorder.state === "recording") return;
+
+        this.isCapturingAudio = true; 
+        this.audioChunks = [];
+
+        try {
+            this.mediaRecorder = new MediaRecorder(this.localStream, { mimeType: 'audio/webm;codecs=opus' });
+
+            this.mediaRecorder.ondataavailable = (event) => {
+                if (event.data.size > 0) this.audioChunks.push(event.data);
+            };
+
+            this.mediaRecorder.onstop = () => {
+                if (this.audioChunks.length > 0 && this.isCapturingAudio) { 
+                    this._processCapturedAudio(); 
+                } else {
+                    this.audioChunks = []; 
+                    if (this.vadEnabled && !this.isProcessingAI && !this.userIsSpeakingVAD) {
+                        this.updateStatus('vad-active', 'Listening...', 'Speak when ready.');
+                        this.voiceBtn.classList.add('vad-listening-mode');
+                        this.voiceBtn.classList.remove('user-speaking', 'ai-processing');
+                    }
+                }
+            };
+
+            this.mediaRecorder.onerror = (event) => {
+                this._log(`MediaRecorder error: ${event.error.name} - ${event.error.message}`, "error");
+                this.isCapturingAudio = false; 
+                this.userIsSpeakingVAD = false;
+                this.updateStatus('error', 'Recording Error', event.error.name);
+                if (this.vadEnabled) this.startVAD(); else this.stopVAD();
+            };
+
+            this.mediaRecorder.start();
+            this._log('🔴 MediaRecorder is now actively recording.', "success");
+
+        } catch (err) {
+            this._log(`Error starting MediaRecorder: ${err.message}`, "error");
+            this.isCapturingAudio = false;
+            this.userIsSpeakingVAD = false;
+            this.updateStatus('error', 'Error', 'Could not start audio capture.');
+            if (this.vadEnabled) this.startVAD();
+        }
+      }
+
+      async _processCapturedAudio() {
+        if (this.audioChunks.length === 0) {
+            this.isCapturingAudio = false; 
+            if (this.vadEnabled) { /* Update UI to listening */ }
+            return;
+        }
+        if (this.isProcessingAI) {
+            this.isCapturingAudio = false; 
+            return;
+        }
+
+        this.isProcessingAI = true;   
+        this.isCapturingAudio = false; 
+
+        this.updateStatus('processing', 'Processing...', 'AI is analyzing');
+        this.voiceBtn.classList.add('ai-processing');
+        this.voiceBtn.classList.remove('user-speaking', 'vad-listening-mode');
+
+        const audioBlob = new Blob(this.audioChunks, { type: 'audio/webm;codecs=opus' });
+        this.audioChunks = []; 
+
+        try {
+            const reader = new FileReader();
+            reader.onloadend = () => {
+                this.socket.emit('audio_data', { audio: reader.result, timestamp: Date.now() });
+            };
+            reader.readAsDataURL(audioBlob);
+        } catch (err) {
+            this._log(`Error processing captured audio: ${err.message}`, "error");
+            this.isProcessingAI = false; 
+            this.updateStatus('error', 'Error', 'Could not process recording');
+            if (this.vadEnabled) { /* Update UI to listening */ }
+        }
+      }
+
+      _handleAudioResponse(data) {
+        this.isProcessingAI = false; 
+        this.voiceBtn.classList.remove('ai-processing');
+
+        if (data.success) {
+          this.transcriptionText.textContent = data.transcription || 'Speech processed';
+          if (data.transcription) this._addMessage(data.transcription, 'user');
+          if (data.response) {
+            this._addMessage(data.response, 'assistant');
+            this._speakText(data.response); 
+          } else { 
+            if (this.vadEnabled) { /* Update UI to listening */ } else { /* Update UI to idle */ }
+          }
+        } else { 
+          this._log(`AI Processing failed: ${data.error || 'Unknown error'}`, "error");
+          this.transcriptionText.textContent = 'Error: ' + (data.error || 'Unknown error');
+          this.updateStatus('error', 'AI Error', data.error || 'Processing failed');
+          setTimeout(() => { 
+            if (this.vadEnabled) { /* Update UI to listening */ } else { /* Update UI to idle */ }
+            this.transcriptionText.textContent = 'Your speech will appear here...';
+          }, 3000);
+        }
+      }
+
+      _addMessage(text, sender) {
+        const messageBubble = document.createElement('div');
+        messageBubble.className = `message-bubble message-${sender}`;
+        messageBubble.textContent = text;
+
+        const wrapper = document.createElement('div');
+        wrapper.style.display = 'flex';
+        wrapper.style.width = '100%';
+        if (sender === 'user') wrapper.style.justifyContent = 'flex-end';
+        else wrapper.style.justifyContent = 'flex-start';
+        
+        wrapper.appendChild(messageBubble);
+        this.chatContainer.appendChild(wrapper);
+        this.chatContainer.scrollTop = this.chatContainer.scrollHeight;
+      }
+
+      _speakText(text) {
+        if (this.synthesis.speaking) this.synthesis.cancel();
+
+        this.currentUtterance = new SpeechSynthesisUtterance(text);
+        const selectedVoiceIndex = this.voiceSelect.value;
+        const voices = this.synthesis.getVoices();
+        if (selectedVoiceIndex && voices.length > 0 && voices[selectedVoiceIndex]) {
+          this.currentUtterance.voice = voices[selectedVoiceIndex];
+        }
+        this.currentUtterance.rate = parseFloat(this.speedRange.value);
+        this.currentUtterance.pitch = parseFloat(this.pitchRange.value);
+
+        this.currentUtterance.onstart = () => {
+          this.updateStatus('speaking', 'AI Speaking...', 'AI is responding');
+          this.voiceBtn.classList.add('ai-speaking');
+          this.voiceBtn.classList.remove('vad-listening-mode', 'user-speaking', 'ai-processing');
+        };
+
+        this.currentUtterance.onend = () => {
+          this.currentUtterance = null;
+          this.voiceBtn.classList.remove('ai-speaking');
+          
+          if (this.vadEnabled && !this.isProcessingAI && !this.userIsSpeakingVAD && !this.isCapturingAudio) {
+              this.updateStatus('vad-active', 'Listening...', 'Speak when ready.');
+              this.voiceBtn.classList.add('vad-listening-mode');
+          } else if (!this.vadEnabled) { 
+              this.updateStatus('idle', 'Ready', 'Click microphone to start listening.');
+          }
+        };
+
+        this.currentUtterance.onerror = (error) => {
+          this._log(`Speech synthesis error: ${error.error}`, "error");
+          this.currentUtterance = null;
+          this.voiceBtn.classList.remove('ai-speaking');
+          this.updateStatus('error', 'TTS Error', 'Could not speak response');
+           if (this.vadEnabled) { /* Update UI to listening */ } else { /* Update UI to idle */ }
+        };
+        this.synthesis.speak(this.currentUtterance);
+      }
+
+      _stopSpeechSynthesis() {
+        if (this.synthesis.speaking) this.synthesis.cancel(); 
+      }
+
+      _bindEvents() {
+        this.voiceBtn.addEventListener('click', () => this.toggleVAD());
+        this.clearChat.addEventListener('click', () => this.socket.emit('clear_conversation'));
+        this.stopSpeaking.addEventListener('click', () => this._stopSpeechSynthesis());
+        this.testGemini.addEventListener('click', () => {
+          if (this.vadEnabled) this.stopVAD(); 
+          this._testGeminiAPI();
+        });
+        this.speedRange.addEventListener('input', (e) => { this.speedValue.textContent = e.target.value; });
+        this.pitchRange.addEventListener('input', (e) => { this.pitchValue.textContent = e.target.value; });
+      }
+
+      _testGeminiAPI() {
+        fetch('/test-gemini')
+          .then(response => response.json())
+          .then(data => {
+            if (data.success) {
+              this._addMessage('Gemini API Test', 'user');
+              this._addMessage(data.response, 'assistant');
+              this._speakText(data.response);
+            } else {
+              this._addMessage('Gemini API Test Failed: ' + data.error, 'assistant');
+            }
+          })
+          .catch(err => {
+            this._log(`Failed to test Gemini API: ${err.message}`, "error");
+            this._addMessage('Failed to test Gemini API', 'assistant');
+          });
+      }
+
+      updateStatus(statusKey, text, detail) {
+        this.statusIndicator.className = `status-indicator status-${statusKey}`;
+        this.statusText.textContent = text;
+        this.statusDetail.textContent = detail;
+      }
+    } // End of VoiceAI class
+
+    document.addEventListener('DOMContentLoaded', () => {
+      const voiceAI = new VoiceAI();
+      window.voiceAI = voiceAI; // For debugging access
+    });
+  </script>
+</body>
+</html>
