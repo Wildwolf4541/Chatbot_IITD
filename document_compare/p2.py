@@ -1,39 +1,45 @@
-import os
 import streamlit as st
-import tempfile
 import pdfplumber
-from dotenv import load_dotenv
-import google.generativeai as genai
-from langchain_community.vectorstores import FAISS
-from langchain.schema import Document
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-# Use Google's official embeddings for better performance than FakeEmbeddings
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+import difflib
+import tempfile
+import os
 
-# -- LOAD ENV VARIABLES --
-load_dotenv()
-api_key = os.getenv("GOOGLE_API_KEY")
+# --- Page Configuration ---
+st.set_page_config(layout="wide", page_title="Document Comparison")
 
-# -- SAFEGUARD FALLBACK --
-if not api_key or api_key.strip() == "":
-    st.error("❌ GOOGLE_API_KEY is not set. Please add it to your .env file.")
-    st.stop()
+# --- CSS for Highlighting Differences ---
+CSS = """
+<style>
+    .deleted {
+        background-color: #ffc9c9; /* light red */
+        text-decoration: line-through;
+    }
+    .inserted {
+        background-color: #d4edda; /* light green */
+    }
+    .container {
+        border: 1px solid #e6e6e6;
+        padding: 15px;
+        border-radius: 5px;
+        font-family: 'Courier New', Courier, monospace;
+        white-space: pre-wrap;   /* Preserve whitespace and wrap text */
+        word-wrap: break-word;   /* Break long words to prevent overflow */
+        font-size: 14px;
+    }
+</style>
+"""
+st.markdown(CSS, unsafe_allow_html=True)
 
-# -- CONFIGURE GEMINI & EMBEDDINGS --
-genai.configure(api_key=api_key)
-gemini_model = genai.GenerativeModel("gemini-1.5-flash")
-# Use real embeddings for accurate retrieval
-embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=api_key)
+# --- Utility Functions ---
 
-
-# -- UTILITIES --
 @st.cache_data
 def extract_text_from_pdf(file_contents):
-    """Extracts text from a PDF file in memory."""
+    """
+    Extracts text from the bytes of an uploaded PDF file.
+    """
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
         tmp.write(file_contents)
         tmp_path = tmp.name
-    
     try:
         with pdfplumber.open(tmp_path) as pdf:
             text = "\n".join(page.extract_text() or "" for page in pdf.pages)
@@ -41,116 +47,107 @@ def extract_text_from_pdf(file_contents):
         os.remove(tmp_path)
     return text
 
-def create_document_chunks(text, source_name):
-    """Splits text into chunks and adds metadata."""
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-    chunks = splitter.split_text(text)
-    return [Document(page_content=chunk, metadata={"source": source_name}) for chunk in chunks]
+def highlight_word_diff(line1, line2):
+    """
+    Performs a word-level diff on two lines and returns HTML-formatted strings
+    with highlights for changed words.
+    """
+    matcher = difflib.SequenceMatcher(None, line1.split(), line2.split())
+    html1, html2 = [], []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == 'equal':
+            html1.append(" ".join(matcher.a[i1:i2]))
+            html2.append(" ".join(matcher.b[j1:j2]))
+        elif tag == 'delete':
+            html1.append(f'<span class="deleted">{" ".join(matcher.a[i1:i2])}</span>')
+        elif tag == 'insert':
+            html2.append(f'<span class="inserted">{" ".join(matcher.b[j1:j2])}</span>')
+        elif tag == 'replace':
+            html1.append(f'<span class="deleted">{" ".join(matcher.a[i1:i2])}</span>')
+            html2.append(f'<span class="inserted">{" ".join(matcher.b[j1:j2])}</span>')
+    return " ".join(html1), " ".join(html2)
 
-def create_vector_db(chunks):
-    """Creates a FAISS vector store from document chunks."""
-    with st.spinner("🧠 Creating vector embeddings... This may take a moment."):
-        db = FAISS.from_documents(chunks, embeddings)
-    return db
+def generate_side_by_side_diff(text1, text2):
+    """
+    Generates two HTML strings representing a side-by-side comparison of two texts.
+    """
+    lines1 = text1.splitlines()
+    lines2 = text2.splitlines()
+    matcher = difflib.SequenceMatcher(None, lines1, lines2)
+    html_lines1, html_lines2 = [], []
 
-def get_answer_from_gemini(question, context_docs):
-    """Asks Gemini a question based on retrieved context."""
-    
-    original_docs = [doc.page_content for doc in context_docs if doc.metadata["source"] == "Original"]
-    amended_docs = [doc.page_content for doc in context_docs if doc.metadata["source"] == "Amended"]
-
-    prompt = f"""
-You are a highly skilled document comparison assistant. Your task is to answer the user's question by analyzing and comparing the provided text sections from an 'Original' document and an 'Amended' document.
-
-**User's Question:**
-{question}
-
----
-**Context from Original Document:**
-{"---".join(original_docs) if original_docs else "No relevant context found in the original document."}
----
-**Context from Amended Document:**
-{"---".join(amended_docs) if amended_docs else "No relevant context found in the amended document."}
----
-
-**Your Instructions:**
-1.  Carefully read the user's question and the provided context from both documents.
-2.  Directly answer the question based *only* on the information in the context.
-3.  Clearly state what has changed, what was added, or what was removed.
-4.  If the context is insufficient to answer the question, clearly state that you cannot answer based on the provided text.
-5.  Be concise and precise in your answer.
-
-**Answer:**
-"""
-    try:
-        response = gemini_model.generate_content(prompt)
-        return response.text.strip()
-    except Exception as e:
-        return f"❌ Error from Gemini API: {e}"
-
-# -- STREAMLIT APP --
-st.set_page_config(layout="wide", page_title="Ask a PDF")
-st.title("📄 Ask Questions About Your PDF Changes")
-st.markdown("Upload two versions of a PDF and ask Gemini to find the differences for you.")
-
-# Initialize session state
-if 'vector_db' not in st.session_state:
-    st.session_state.vector_db = None
-if 'processed_files' not in st.session_state:
-    st.session_state.processed_files = []
-
-with st.sidebar:
-    st.header("1. Upload Documents")
-    file1 = st.file_uploader("Upload Original PDF", type="pdf", key="file1")
-    file2 = st.file_uploader("Upload Amended PDF", type="pdf", key="file2")
-
-    if st.button("Process Documents", type="primary", use_container_width=True):
-        if file1 and file2:
-            # Check if files have already been processed
-            if [file1.name, file2.name] == st.session_state.processed_files:
-                st.toast("✅ Documents are already processed and ready.")
-            else:
-                with st.status("⚙️ Processing PDFs...", expanded=True) as status:
-                    st.write("Extracting text from documents...")
-                    text1 = extract_text_from_pdf(file1.getvalue())
-                    text2 = extract_text_from_pdf(file2.getvalue())
-                    
-                    st.write("Chunking documents...")
-                    chunks_v1 = create_document_chunks(text1, "Original")
-                    chunks_v2 = create_document_chunks(text2, "Amended")
-                    all_chunks = chunks_v1 + chunks_v2
-
-                    st.write("Creating vector store...")
-                    st.session_state.vector_db = create_vector_db(all_chunks)
-                    st.session_state.processed_files = [file1.name, file2.name]
-                    status.update(label="✅ Processing Complete!", state="complete")
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == 'equal':
+            for line in lines1[i1:i2]:
+                html_lines1.append(line)
+                html_lines2.append(line)
         else:
-            st.warning("⚠️ Please upload both PDF files.")
+            block1, block2 = lines1[i1:i2], lines2[j1:j2]
+            max_len = max(len(block1), len(block2))
+            for i in range(max_len):
+                line1 = block1[i] if i < len(block1) else ""
+                line2 = block2[i] if i < len(block2) else ""
+                if line1 == line2:
+                    h1, h2 = line1, line2
+                else:
+                    h1, h2 = highlight_word_diff(line1, line2)
+                html_lines1.append(h1 if line1 else ' ')
+                html_lines2.append(h2 if line2 else ' ')
 
-st.header("2. Ask Your Question")
+    return "<br>".join(html_lines1), "<br>".join(html_lines2)
 
-if st.session_state.vector_db:
-    st.success("Documents processed! You can now ask questions about the changes.")
-    
-    question = st.text_input(
-        "e.g., 'What changed about the termination clause?' or 'Summarize the changes in section 5'",
-        placeholder="Ask about changes between the two documents..."
-    )
+# --- Streamlit App UI ---
 
-    if question:
-        with st.spinner("🔍 Searching for relevant context..."):
-            retriever = st.session_state.vector_db.as_retriever(search_kwargs={"k": 6})
-            relevant_docs = retriever.get_relevant_documents(question)
+st.title("📄 Visual Document Comparison")
+st.markdown("Upload two versions of a PDF document to see the differences highlighted side-by-side.")
 
-        with st.spinner("🤖 Gemini is analyzing the differences..."):
-            answer = get_answer_from_gemini(question, relevant_docs)
-            st.info(f"**Answer:**\n\n{answer}")
+col1, col2 = st.columns(2)
+with col1:
+    st.header("Original Document")
+    file1 = st.file_uploader("Upload the first PDF", type="pdf", key="file1")
 
-        with st.expander("📚 View Retrieved Context"):
-            st.markdown("---")
-            for doc in relevant_docs:
-                st.markdown(f"**Source: {doc.metadata['source']}**")
-                st.code(doc.page_content)
-                st.markdown("---")
+with col2:
+    st.header("Revised Document")
+    file2 = st.file_uploader("Upload the second PDF", type="pdf", key="file2")
+
+if file1 and file2:
+    if st.button("Compare Documents", type="primary", use_container_width=True):
+        with st.spinner("Analyzing documents..."):
+            text1 = extract_text_from_pdf(file1.getvalue())
+            text2 = extract_text_from_pdf(file2.getvalue())
+
+            # --- NEW: Calculate and display similarity score ---
+            # Create a SequenceMatcher instance with the full text of both documents
+            matcher = difflib.SequenceMatcher(None, text1, text2)
+            similarity_score = matcher.ratio()
+            similarity_percentage_str = f"{similarity_score * 100:.1f}%"
+
+            # Generate the detailed visual diff
+            diff1, diff2 = generate_side_by_side_diff(text1, text2)
+
+        # Display the overall score first
+        st.header("Overall Similarity")
+        st.metric(
+            label="Document Similarity Score",
+            value=similarity_percentage_str,
+            help="This score represents how similar the extracted text from the two documents is. 100% means identical text."
+        )
+        st.progress(similarity_score)
+        st.markdown("---") # Visual separator
+
+        # Display the detailed comparison
+        if text1 or text2:
+            st.header("Detailed Comparison")
+            display_col1, display_col2 = st.columns(2)
+            
+            with display_col1:
+                st.markdown(f"**{file1.name}**")
+                st.markdown(f'<div class="container">{diff1}</div>', unsafe_allow_html=True)
+            
+            with display_col2:
+                st.markdown(f"**{file2.name}**")
+                st.markdown(f'<div class="container">{diff2}</div>', unsafe_allow_html=True)
+        else:
+            st.error("Could not extract text from one or both PDFs. They might be image-based or empty.")
 else:
-    st.info("Please upload and process two PDF documents in the sidebar to begin.")
+    st.info("Please upload both documents to enable comparison.")
